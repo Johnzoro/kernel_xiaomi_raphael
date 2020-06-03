@@ -313,6 +313,16 @@ static inline bool drm_drv_uses_atomic_modeset(struct drm_device *dev)
 	return dev->mode_config.funcs->atomic_commit != NULL;
 }
 
+/**
+*AOD brightness, hight brightness level 60nit, low brightness level 5nit
+*/
+#define DOZE_MIN_BRIGHTNESS_LEVEL	5
+enum {
+	DOZE_BRIGHTNESS_INVALID = 0,
+	DOZE_BRIGHTNESS_HBM,
+	DOZE_BRIGHTNESS_LBM,
+};
+
 #define DRM_SWITCH_POWER_ON 0
 #define DRM_SWITCH_POWER_OFF 1
 #define DRM_SWITCH_POWER_CHANGING 2

@@ -1050,6 +1050,9 @@ static void sde_kms_commit(struct msm_kms *kms,
 			sde_crtc_commit_kickoff(crtc, old_crtc_state);
 		}
 	}
+	for_each_crtc_in_state(old_state, crtc, old_crtc_state, i) {
+		sde_crtc_fod_ui_ready(crtc, old_crtc_state);
+	}
 
 	SDE_ATRACE_END("sde_kms_commit");
 }
@@ -1135,7 +1138,9 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 	SDE_ATRACE_BEGIN("sde_kms_complete_commit");
 
 	for_each_crtc_in_state(old_state, crtc, old_crtc_state, i) {
+		SDE_ATRACE_BEGIN("sde_crtc_complete_commit");
 		sde_crtc_complete_commit(crtc, old_crtc_state);
+		SDE_ATRACE_END("sde_crtc_complete_commit");
 
 		/* complete secure transitions if any */
 		if (sde_kms->smmu_state.transition_type == POST_COMMIT)
@@ -1148,7 +1153,9 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 		c_conn = to_sde_connector(connector);
 		if (!c_conn->ops.post_kickoff)
 			continue;
+		SDE_ATRACE_BEGIN("post_kickoff");
 		rc = c_conn->ops.post_kickoff(connector);
+		SDE_ATRACE_END("post_kickoff");
 		if (rc) {
 			pr_err("Connector Post kickoff failed rc=%d\n",
 					 rc);
@@ -3476,6 +3483,21 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 				sizeof(struct sde_splash_data));
 	}
 
+	sde_kms->splash_data.resource_handoff_pending = true;
+
+	/* Initialize reg dma block which is a singleton */
+	rc = sde_reg_dma_init(sde_kms->reg_dma, sde_kms->catalog,
+			sde_kms->dev);
+	if (rc) {
+		SDE_ERROR("failed: reg dma init failed\n");
+		goto power_error;
+	}
+
+	rc = _sde_kms_mmu_init(sde_kms);
+	if (rc) {
+		SDE_ERROR("sde_kms_mmu_init failed: %d\n", rc);
+		goto power_error;
+	}
 	sde_kms->hw_mdp = sde_rm_get_mdp(&sde_kms->rm);
 	if (IS_ERR_OR_NULL(sde_kms->hw_mdp)) {
 		rc = PTR_ERR(sde_kms->hw_mdp);

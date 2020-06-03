@@ -2,7 +2,7 @@
  * MIPI DSI Bus
  *
  * Copyright (C) 2012-2013, Samsung Electronics, Co., Ltd.
- * Copyright (C) 2019 XiaoMi, Inc.
+ * Copyright (C) 2020 XiaoMi, Inc.
  * Andrzej Hajda <a.hajda@samsung.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -363,6 +363,7 @@ static ssize_t mipi_dsi_device_transfer(struct mipi_dsi_device *dsi,
 		msg->flags |= MIPI_DSI_MSG_USE_LPM;
 	msg->flags |= MIPI_DSI_MSG_LASTCOMMAND;
 
+	msg->flags |= MIPI_DSI_MSG_LASTCOMMAND;
 	return ops->transfer(dsi->host, msg);
 }
 
@@ -657,7 +658,7 @@ ssize_t mipi_dsi_dcs_write_buffer(struct mipi_dsi_device *dsi,
 	struct mipi_dsi_msg msg = {
 		.channel = dsi->channel,
 		.tx_buf = data,
-		.tx_len = len
+		.tx_len = len,
 	};
 
 	switch (len) {

@@ -1,5 +1,4 @@
 /* Copyright (c) 2009-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2019 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -33,10 +32,10 @@
 #define DEFAULT_DBGBUS_SDE	SDE_DBG_DUMP_IN_MEM
 #define DEFAULT_DBGBUS_VBIFRT	SDE_DBG_DUMP_IN_MEM
 #else
-#define DEFAULT_PANIC		0
-#define DEFAULT_REGDUMP		SDE_DBG_DUMP_IN_LOG
-#define DEFAULT_DBGBUS_SDE	SDE_DBG_DUMP_IN_LOG
-#define DEFAULT_DBGBUS_VBIFRT	SDE_DBG_DUMP_IN_LOG
+#define DEFAULT_PANIC          0
+#define DEFAULT_REGDUMP                SDE_DBG_DUMP_IN_LOG
+#define DEFAULT_DBGBUS_SDE     SDE_DBG_DUMP_IN_LOG
+#define DEFAULT_DBGBUS_VBIFRT  SDE_DBG_DUMP_IN_LOG
 #endif
 
 #define DEFAULT_BASE_REG_CNT	0x100

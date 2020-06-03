@@ -37,9 +37,9 @@
 #include "sde_crtc.h"
 #include "sde_trace.h"
 #include "sde_core_irq.h"
-#include "dsi_drm.h"
 #include "sde_hw_top.h"
 #include "sde_hw_qdss.h"
+#include "dsi_drm.h"
 
 #define SDE_DEBUG_ENC(e, fmt, ...) SDE_DEBUG("enc%d " fmt,\
 		(e) ? (e)->base.base.id : -1, ##__VA_ARGS__)
@@ -4669,6 +4669,12 @@ int sde_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc,
 				sde_enc->cur_master, sde_kms->qdss_enabled);
 
 end:
+	if (sde_enc->cur_master && sde_enc->cur_master->connector) {
+		struct sde_connector *c_conn;
+		c_conn = to_sde_connector(sde_enc->cur_master->connector);
+		sde_connector_update_hbm(c_conn);
+	}
+
 	SDE_ATRACE_END("sde_encoder_prepare_for_kickoff");
 	return ret;
 }
@@ -5213,7 +5219,6 @@ static int sde_encoder_setup_display(struct sde_encoder_virt *sde_enc,
 	} else if (disp_info->intf_type == DRM_MODE_CONNECTOR_VIRTUAL) {
 		*drm_enc_mode = DRM_MODE_ENCODER_VIRTUAL;
 		intf_type = INTF_WB;
-		phys_params.parent_ops.handle_vblank_virt = NULL;
 	} else {
 		SDE_ERROR_ENC(sde_enc, "unsupported display interface type\n");
 		return -EINVAL;
