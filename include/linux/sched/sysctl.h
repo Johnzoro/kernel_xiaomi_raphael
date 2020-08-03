@@ -30,6 +30,7 @@ extern unsigned int sysctl_sched_sync_hint_enable;
 extern unsigned int sysctl_sched_cstate_aware;
 extern unsigned int sysctl_sched_wakeup_granularity;
 extern unsigned int sysctl_sched_child_runs_first;
+extern unsigned int sysctl_sched_energy_aware;
 extern unsigned int sysctl_sched_capacity_margin_up[MAX_MARGIN_LEVELS];
 extern unsigned int sysctl_sched_capacity_margin_down[MAX_MARGIN_LEVELS];
 #ifdef CONFIG_SCHED_WALT
@@ -57,8 +58,7 @@ walt_proc_update_handler(struct ctl_table *table, int write,
 #if defined(CONFIG_PREEMPT_TRACER) || defined(CONFIG_DEBUG_PREEMPT)
 extern unsigned int sysctl_preemptoff_tracing_threshold_ns;
 #endif
-#if defined(CONFIG_PREEMPTIRQ_EVENTS) && defined(CONFIG_IRQSOFF_TRACER) && \
-		!defined(CONFIG_PROVE_LOCKING)
+#if defined(CONFIG_PREEMPTIRQ_EVENTS) && defined(CONFIG_IRQSOFF_TRACER)
 extern unsigned int sysctl_irqsoff_tracing_threshold_ns;
 #endif
 
@@ -75,15 +75,15 @@ extern unsigned int sysctl_numa_balancing_scan_period_min;
 extern unsigned int sysctl_numa_balancing_scan_period_max;
 extern unsigned int sysctl_numa_balancing_scan_size;
 
-extern __read_mostly unsigned int sysctl_sched_migration_cost;
 #ifdef CONFIG_SCHED_DEBUG
+extern __read_mostly unsigned int sysctl_sched_migration_cost;
 extern __read_mostly unsigned int sysctl_sched_nr_migrate;
 extern __read_mostly unsigned int sysctl_sched_time_avg;
-#endif
 
 int sched_proc_update_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *length,
 		loff_t *ppos);
+#endif
 
 extern int sched_boost_handler(struct ctl_table *table, int write,
 			void __user *buffer, size_t *lenp, loff_t *ppos);
@@ -133,10 +133,5 @@ extern int sched_little_cluster_coloc_fmin_khz_handler(struct ctl_table *table,
 					int write, void __user *buffer,
 					size_t *lenp, loff_t *ppos);
 #endif
-
-#define LIB_PATH_LENGTH 512
-extern char sched_lib_name[LIB_PATH_LENGTH];
-extern unsigned int sched_lib_mask_force;
-extern bool is_sched_lib_based_app(pid_t pid);
 
 #endif /* _LINUX_SCHED_SYSCTL_H */

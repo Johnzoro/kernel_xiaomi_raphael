@@ -54,6 +54,65 @@ u64 walt_load_reported_window;
 static struct irq_work walt_cpufreq_irq_work;
 static struct irq_work walt_migration_irq_work;
 
+static unsigned int task_load(struct task_struct *p)
+{
+	return p->ravg.demand;
+}
+
+static inline void fixup_cum_window_demand(struct rq *rq, s64 delta)
+{
+	rq->cum_window_demand += delta;
+	if (unlikely((s64)rq->cum_window_demand < 0))
+		rq->cum_window_demand = 0;
+}
+
+void
+walt_inc_cumulative_runnable_avg(struct rq *rq,
+				 struct task_struct *p)
+{
+	rq->cumulative_runnable_avg += p->ravg.demand;
+
+	/*
+	 * Add a task's contribution to the cumulative window demand when
+	 *
+	 * (1) task is enqueued with on_rq = 1 i.e migration,
+	 *     prio/cgroup/class change.
+	 * (2) task is waking for the first time in this window.
+	 */
+	if (p->on_rq || (p->last_sleep_ts < rq->window_start))
+		fixup_cum_window_demand(rq, p->ravg.demand);
+}
+
+void
+walt_dec_cumulative_runnable_avg(struct rq *rq,
+				 struct task_struct *p)
+{
+	rq->cumulative_runnable_avg -= p->ravg.demand;
+	BUG_ON((s64)rq->cumulative_runnable_avg < 0);
+
+	/*
+	 * on_rq will be 1 for sleeping tasks. So check if the task
+	 * is migrating or dequeuing in RUNNING state to change the
+	 * prio/cgroup/class.
+	 */
+	if (task_on_rq_migrating(p) || p->state == TASK_RUNNING)
+		fixup_cum_window_demand(rq, -(s64)p->ravg.demand);
+}
+
+void
+walt_fixup_cumulative_runnable_avg(struct rq *rq,
+				   struct task_struct *p, u64 new_task_load)
+{
+	s64 task_load_delta = (s64)new_task_load - task_load(p);
+
+	rq->cumulative_runnable_avg += task_load_delta;
+	if ((s64)rq->cumulative_runnable_avg < 0)
+		panic("cra less than zero: tld: %lld, task_load(p) = %u\n",
+			task_load_delta, task_load(p));
+
+	fixup_cum_window_demand(rq, task_load_delta);
+}
+
 u64 sched_ktime_clock(void)
 {
 	if (unlikely(sched_ktime_suspended))
@@ -89,16 +148,10 @@ static void acquire_rq_locks_irqsave(const cpumask_t *cpus,
 				     unsigned long *flags)
 {
 	int cpu;
-	int level = 0;
 
 	local_irq_save(*flags);
-	for_each_cpu(cpu, cpus) {
-		if (level == 0)
-			raw_spin_lock(&cpu_rq(cpu)->lock);
-		else
-			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
-		level++;
-	}
+	for_each_cpu(cpu, cpus)
+		raw_spin_lock(&cpu_rq(cpu)->lock);
 }
 
 static void release_rq_locks_irqrestore(const cpumask_t *cpus,
@@ -880,7 +933,7 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 	if (!same_freq_domain(new_cpu, task_cpu(p))) {
 		src_rq->notif_pending = true;
 		dest_rq->notif_pending = true;
-		sched_irq_work_queue(&walt_migration_irq_work);
+		irq_work_queue(&walt_migration_irq_work);
 	}
 
 	if (is_ed_enabled()) {
@@ -927,9 +980,6 @@ void set_window_start(struct rq *rq)
 
 unsigned int max_possible_efficiency = 1;
 unsigned int min_possible_efficiency = UINT_MAX;
-
-unsigned int sysctl_sched_conservative_pl;
-unsigned int sysctl_sched_many_wakeup_threshold = 1000;
 
 #define INC_STEP 8
 #define DEC_STEP 2
@@ -1761,6 +1811,9 @@ static void update_history(struct rq *rq, struct task_struct *p,
 				p->sched_class->fixup_walt_sched_stats)
 			p->sched_class->fixup_walt_sched_stats(rq, p,
 					demand_scaled, pred_demand_scaled);
+		if (task_on_rq_queued(p))
+			p->sched_class->fixup_cumulative_runnable_avg(rq, p,
+								      demand);
 		else if (rq->curr == p)
 			walt_fixup_cum_window_demand(rq, demand_scaled);
 	}
@@ -1962,7 +2015,7 @@ static inline void run_walt_irq_work(u64 old_window_start, struct rq *rq)
 	result = atomic64_cmpxchg(&walt_irq_work_lastq_ws, old_window_start,
 				   rq->window_start);
 	if (result == old_window_start)
-		sched_irq_work_queue(&walt_cpufreq_irq_work);
+		irq_work_queue(&walt_cpufreq_irq_work);
 }
 
 /* Reflect task activity on its demand and cpu's busy time statistics */
@@ -2487,19 +2540,14 @@ core_initcall(register_walt_callback);
 
 int register_cpu_cycle_counter_cb(struct cpu_cycle_counter_cb *cb)
 {
-	unsigned long flags;
-
 	mutex_lock(&cluster_lock);
 	if (!cb->get_cpu_cycle_counter) {
 		mutex_unlock(&cluster_lock);
 		return -EINVAL;
 	}
 
-	acquire_rq_locks_irqsave(cpu_possible_mask, &flags);
 	cpu_cycle_counter_cb = *cb;
 	use_cycle_counter = true;
-	release_rq_locks_irqrestore(cpu_possible_mask, &flags);
-
 	mutex_unlock(&cluster_lock);
 
 	cpufreq_unregister_notifier(&notifier_trans_block,
