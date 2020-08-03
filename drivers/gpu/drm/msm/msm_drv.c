@@ -927,7 +927,6 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 	}
 
 	drm_kms_helper_poll_init(ddev);
-	place_marker("M - DISPLAY Driver Ready");
 
 	return 0;
 
