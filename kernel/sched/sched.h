@@ -137,8 +137,6 @@ extern void init_sched_groups_capacity(int cpu, struct sched_domain *sd);
 static inline void cpu_load_update_active(struct rq *this_rq) { }
 #endif
 
-extern bool energy_aware(void);
-
 /*
  * Helpers for converting nanosecond timing to jiffy resolution
  */
@@ -882,7 +880,6 @@ struct rq {
 	int cstate, wakeup_latency, wakeup_energy;
 	u64 window_start;
 	s64 cum_window_start;
-	unsigned long walt_flags;
 
 	u64 cur_irqload;
 	u64 avg_irqload;
@@ -909,6 +906,8 @@ struct rq {
 	u64 last_cc_update;
 	u64 cycles;
 #endif /* CONFIG_SCHED_WALT */
+
+	unsigned long extra_flags;
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 	u64 prev_irq_time;
@@ -1458,9 +1457,9 @@ static inline void __set_task_cpu(struct task_struct *p, unsigned int cpu)
 	 */
 	smp_wmb();
 #ifdef CONFIG_THREAD_INFO_IN_TASK
-	p->cpu = cpu;
+	WRITE_ONCE(p->cpu, cpu);
 #else
-	task_thread_info(p)->cpu = cpu;
+	WRITE_ONCE(task_thread_info(p)->cpu, cpu);
 #endif
 	p->wake_cpu = cpu;
 #endif
@@ -1476,6 +1475,8 @@ static inline void __set_task_cpu(struct task_struct *p, unsigned int cpu)
 # define const_debug const
 #endif
 
+extern const_debug unsigned int sysctl_sched_features;
+
 #define SCHED_FEAT(name, enabled)	\
 	__SCHED_FEAT_##name ,
 
@@ -1487,13 +1488,6 @@ enum {
 #undef SCHED_FEAT
 
 #if defined(CONFIG_SCHED_DEBUG) && defined(HAVE_JUMP_LABEL)
-
-/*
- * To support run-time toggling of sched features, all the translation units
- * (but core.c) reference the sysctl_sched_features defined in core.c.
- */
-extern const_debug unsigned int sysctl_sched_features;
-
 #define SCHED_FEAT(name, enabled)					\
 static __always_inline bool static_branch_##name(struct static_key *key) \
 {									\
@@ -1501,27 +1495,13 @@ static __always_inline bool static_branch_##name(struct static_key *key) \
 }
 
 #include "features.h"
+
 #undef SCHED_FEAT
 
 extern struct static_key sched_feat_keys[__SCHED_FEAT_NR];
 #define sched_feat(x) (static_branch_##x(&sched_feat_keys[__SCHED_FEAT_##x]))
-
 #else /* !(SCHED_DEBUG && HAVE_JUMP_LABEL) */
-
-/*
- * Each translation unit has its own copy of sysctl_sched_features to allow
- * constants propagation at compile time and compiler optimization based on
- * features default.
- */
-#define SCHED_FEAT(name, enabled)	\
-	(1UL << __SCHED_FEAT_##name) * enabled |
-static const_debug __maybe_unused unsigned int sysctl_sched_features =
-#include "features.h"
-	0;
-#undef SCHED_FEAT
-
 #define sched_feat(x) !!(sysctl_sched_features & (1UL << __SCHED_FEAT_##x))
-
 #endif /* SCHED_DEBUG && HAVE_JUMP_LABEL */
 
 extern struct static_key_false sched_numa_balancing;
@@ -1561,7 +1541,7 @@ static inline int task_on_rq_queued(struct task_struct *p)
 
 static inline int task_on_rq_migrating(struct task_struct *p)
 {
-	return p->on_rq == TASK_ON_RQ_MIGRATING;
+	return READ_ONCE(p->on_rq) == TASK_ON_RQ_MIGRATING;
 }
 
 #ifndef prepare_arch_switch
@@ -1657,6 +1637,7 @@ extern const u32 sched_prio_to_wmult[40];
 #define DEQUEUE_SAVE		0x02 /* matches ENQUEUE_RESTORE */
 #define DEQUEUE_MOVE		0x04 /* matches ENQUEUE_MOVE */
 #define DEQUEUE_NOCLOCK		0x08 /* matches ENQUEUE_NOCLOCK */
+#define DEQUEUE_IDLE		0x80 /* The last dequeue before IDLE */
 
 #define ENQUEUE_WAKEUP		0x01
 #define ENQUEUE_RESTORE		0x02
@@ -1741,9 +1722,6 @@ struct sched_class {
 	void (*fixup_walt_sched_stats)(struct rq *rq, struct task_struct *p,
 				       u16 updated_demand_scaled,
 				       u16 updated_pred_demand_scaled);
-	void (*fixup_cumulative_runnable_avg)(struct rq *rq,
-					      struct task_struct *task,
-					      u64 new_task_load);
 #endif
 };
 
@@ -1932,7 +1910,7 @@ extern void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags);
 
 extern const_debug unsigned int sysctl_sched_time_avg;
 extern const_debug unsigned int sysctl_sched_nr_migrate;
-extern const_debug unsigned int sysctl_sched_migration_cost;
+extern unsigned int __read_mostly sysctl_sched_migration_cost;
 
 static inline u64 sched_avg_period(void)
 {
@@ -1969,7 +1947,10 @@ static inline int hrtick_enabled(struct rq *rq)
 #ifdef CONFIG_SCHED_WALT
 u64 sched_ktime_clock(void);
 #else
-#define sched_ktime_clock ktime_get_ns
+static inline u64 sched_ktime_clock(void)
+{
+	return sched_clock();
+}
 #endif
 
 #ifdef CONFIG_SMP
@@ -2146,7 +2127,6 @@ cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 
 		nl = div64_u64(nl * (100 + boost),
 		walt_cpu_util_freq_divisor);
-		pl = div64_u64(pl * (100 + boost), 100);
 
 		walt_load->prev_window_util = util;
 		walt_load->nl = nl;
@@ -2572,10 +2552,6 @@ enum sched_boost_policy {
 	SCHED_BOOST_ON_ALL,
 };
 
-#define NO_BOOST 0
-#define FULL_THROTTLE_BOOST 1
-#define CONSERVATIVE_BOOST 2
-#define RESTRAINED_BOOST 3
 /*
  * Returns the rq capacity of any rq in a group. This does not play
  * well with groups where rq capacity can change independently.
@@ -2876,8 +2852,6 @@ static inline int same_freq_domain(int src_cpu, int dst_cpu)
 	return cpumask_test_cpu(dst_cpu, &rq->freq_domain_cpumask);
 }
 
-#define	CPU_RESERVED	1
-
 extern enum sched_boost_policy boost_policy;
 static inline enum sched_boost_policy sched_boost_policy(void)
 {
@@ -2924,27 +2898,6 @@ extern int alloc_related_thread_groups(void);
 extern unsigned long all_cluster_ids[];
 
 extern void check_for_migration(struct rq *rq, struct task_struct *p);
-
-static inline int is_reserved(int cpu)
-{
-	struct rq *rq = cpu_rq(cpu);
-
-	return test_bit(CPU_RESERVED, &rq->walt_flags);
-}
-
-static inline int mark_reserved(int cpu)
-{
-	struct rq *rq = cpu_rq(cpu);
-
-	return test_and_set_bit(CPU_RESERVED, &rq->walt_flags);
-}
-
-static inline void clear_reserved(int cpu)
-{
-	struct rq *rq = cpu_rq(cpu);
-
-	clear_bit(CPU_RESERVED, &rq->walt_flags);
-}
 
 static inline bool
 task_in_cum_window_demand(struct rq *rq, struct task_struct *p)
@@ -3092,7 +3045,6 @@ static inline int update_preferred_cluster(struct related_thread_group *grp,
 
 static inline void add_new_task_to_grp(struct task_struct *new) {}
 
-static inline void clear_reserved(int cpu) { }
 static inline int alloc_related_thread_groups(void) { return 0; }
 
 #define trace_sched_cpu_load(...)
@@ -3114,11 +3066,6 @@ static inline unsigned long thermal_cap(int cpu)
 
 static inline void clear_walt_request(int cpu) { }
 
-static inline int is_reserved(int cpu)
-{
-	return 0;
-}
-
 static inline enum sched_boost_policy sched_boost_policy(void)
 {
 	return SCHED_BOOST_NONE;
@@ -3137,6 +3084,34 @@ static inline void note_task_waking(struct task_struct *p, u64 wallclock) { }
 static inline void walt_map_freq_to_load(void) { }
 static inline void walt_update_min_max_capacity(void) { }
 #endif	/* CONFIG_SCHED_WALT */
+
+#define	CPU_RESERVED	1
+
+static inline int is_reserved(int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	return test_bit(CPU_RESERVED, &rq->extra_flags);
+}
+
+static inline int mark_reserved(int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	return test_and_set_bit(CPU_RESERVED, &rq->extra_flags);
+}
+
+static inline void clear_reserved(int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	clear_bit(CPU_RESERVED, &rq->extra_flags);
+}
+
+static inline bool energy_aware(void)
+{
+	return sched_feat(ENERGY_AWARE);
+}
 
 struct sched_avg_stats {
 	int nr;

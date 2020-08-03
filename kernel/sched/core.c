@@ -18,7 +18,6 @@
 #include <linux/rcupdate_wait.h>
 
 #include <linux/blkdev.h>
-#include <linux/kcov.h>
 #include <linux/kprobes.h>
 #include <linux/mmu_context.h>
 #include <linux/module.h>
@@ -32,7 +31,6 @@
 #include <linux/delay.h>
 
 #include <linux/kthread.h>
-#include <linux/scs.h>
 
 #include <asm/switch_to.h>
 #include <asm/tlb.h>
@@ -50,21 +48,18 @@
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
-#if defined(CONFIG_SCHED_DEBUG) && defined(HAVE_JUMP_LABEL)
 /*
  * Debugging: various feature bits
- *
- * If SCHED_DEBUG is disabled, each compilation unit has its own copy of
- * sysctl_sched_features, defined in sched.h, to allow constants propagation
- * at compile time and compiler optimization based on features default.
  */
+
 #define SCHED_FEAT(name, enabled)	\
 	(1UL << __SCHED_FEAT_##name) * enabled |
+
 const_debug unsigned int sysctl_sched_features =
 #include "features.h"
 	0;
+
 #undef SCHED_FEAT
-#endif
 
 /*
  * Number of tasks to iterate in a single balance run.
@@ -144,11 +139,12 @@ struct rq *task_rq_lock(struct task_struct *p, struct rq_flags *rf)
 		 *					[L] ->on_rq
 		 *	RELEASE (rq->lock)
 		 *
-		 * If we observe the old cpu in task_rq_lock, the acquire of
+		 * If we observe the old CPU in task_rq_lock(), the acquire of
 		 * the old rq->lock will fully serialize against the stores.
 		 *
-		 * If we observe the new CPU in task_rq_lock, the acquire will
-		 * pair with the WMB to ensure we must then also see migrating.
+		 * If we observe the new CPU in task_rq_lock(), the address
+		 * dependency headed by '[L] rq = task_rq()' and the acquire
+		 * will pair with the WMB to ensure we then also see migrating.
 		 */
 		if (likely(rq == task_rq(p) && !task_on_rq_migrating(p))) {
 			rq_pin_lock(rq, rf);
@@ -977,7 +973,7 @@ static struct rq *move_queued_task(struct rq *rq, struct rq_flags *rf,
 {
 	lockdep_assert_held(&rq->lock);
 
-	p->on_rq = TASK_ON_RQ_MIGRATING;
+	WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
 	dequeue_task(rq, p, DEQUEUE_NOCLOCK);
 #ifdef CONFIG_SCHED_WALT
 	double_lock_balance(rq, cpu_rq(new_cpu));
@@ -2317,6 +2313,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
 	p->last_sleep_ts		= 0;
+	p->boost                = 0;
+	p->boost_expires        = 0;
+	p->boost_period         = 0;
 
 	INIT_LIST_HEAD(&p->se.group_node);
 
@@ -2609,6 +2608,7 @@ void wake_up_new_task(struct task_struct *p)
 	 * Use __set_task_cpu() to avoid calling sched_class::migrate_task_rq,
 	 * as we're not fully set-up yet.
 	 */
+	p->recent_used_cpu = task_cpu(p);
 	__set_task_cpu(p, select_task_rq(p, task_cpu(p), SD_BALANCE_FORK, 0, 1));
 #endif
 	rq = __task_rq_lock(p, &rf);
@@ -2739,7 +2739,6 @@ static inline void
 prepare_task_switch(struct rq *rq, struct task_struct *prev,
 		    struct task_struct *next)
 {
-	kcov_prepare_switch(prev);
 	sched_info_switch(rq, prev, next);
 	perf_event_task_sched_out(prev, next);
 	fire_sched_out_preempt_notifiers(prev, next);
@@ -2817,7 +2816,6 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 	smp_mb__after_unlock_lock();
 	finish_lock_switch(rq, prev);
 	finish_arch_post_lock_switch();
-	kcov_finish_switch(current);
 
 	fire_sched_in_preempt_notifiers(current);
 	if (mm)
@@ -6230,6 +6228,7 @@ int sched_cpu_starting(unsigned int cpu)
 {
 	set_cpu_rq_start_time(cpu);
 	sched_rq_cpu_starting(cpu);
+	clear_walt_request(cpu);
 	return 0;
 }
 
@@ -6462,6 +6461,7 @@ void __init sched_init(void)
 		rq->avg_idle = 2*sysctl_sched_migration_cost;
 		rq->max_idle_balance_cost = sysctl_sched_migration_cost;
 		rq->push_task = NULL;
+		rq->extra_flags = 0;
 		walt_sched_init_rq(rq);
 
 		INIT_LIST_HEAD(&rq->cfs_tasks);
@@ -7465,6 +7465,26 @@ const u32 sched_prio_to_wmult[40] = {
  /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
  /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
 };
+
+/*
+ *@boost:should be 0,1,2.
+ *@period:boost time based on ms units.
+ */
+int set_task_boost(int boost, u64 period)
+{
+	if (boost < 0 || boost > 2)
+		return -EINVAL;
+	if (boost) {
+		current->boost = boost;
+		current->boost_period = (u64)period * 1000 * 1000;
+		current->boost_expires = sched_clock() + current->boost_period;
+	} else {
+		current->boost = 0;
+		current->boost_expires = 0;
+		current->boost_period = 0;
+	}
+	return 0;
+}
 
 #ifdef CONFIG_SCHED_WALT
 /*
